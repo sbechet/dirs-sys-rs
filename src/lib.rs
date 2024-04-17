@@ -29,6 +29,28 @@ use std::ptr;
 
 use super::libc;
 
+#[cfg(target_os = "android")]
+fn get_package_name() -> Option<String> {
+    // Execute 'dumpsys activity'
+    let output = std::process::Command::new("dumpsys")
+                    .arg("activity")
+                    .output()
+                    .expect("Failed to execute command");
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            // mFocusedApp=ActivityRecord{deadbeaf u0 org.alice.bob/.ui.conversation.ConversationActivity t123}
+            if line.contains("mFocusedApp") {
+                if let Some(package_name) = line.split_whitespace().nth(2).and_then(|s| s.split('/').next()) {
+                    return Some(package_name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 // https://github.com/rust-lang/rust/blob/2682b88c526d493edeb2d3f2df358f44db69b73f/library/std/src/sys/unix/os.rs#L595
 pub fn home_dir() -> Option<PathBuf> {
     return env::var_os("HOME")
@@ -36,10 +58,28 @@ pub fn home_dir() -> Option<PathBuf> {
         .or_else(|| unsafe { fallback() })
         .map(PathBuf::from);
 
-    #[cfg(any(target_os = "android", target_os = "ios", target_os = "emscripten"))]
+    #[cfg(any(target_os = "ios", target_os = "emscripten"))]
     unsafe fn fallback() -> Option<OsString> {
         None
     }
+
+    #[cfg(target_os = "android")]
+    unsafe fn fallback() -> Option<OsString> {
+        if let Some(package_name) = get_package_name() {
+            return env::var_os("ANDROID_DATA")
+            .and_then(|data_root| if data_root.is_empty() { None } else {
+                let mut result = OsString::new();
+                result.push(&data_root);
+                result.push("/data/");
+                result.push(&package_name);
+                result.push("/files");
+                return Some(result);
+            })
+        } else {
+            return None;
+        }
+    }
+
     #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "emscripten")))]
     unsafe fn fallback() -> Option<OsString> {
         let amt = match libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) {
